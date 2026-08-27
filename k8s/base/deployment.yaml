@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: number-reverser
+  labels:
+    app: number-reverser
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: number-reverser
+
+  template:
+    metadata:
+      labels:
+        app: number-reverser
+
+    spec:
+      serviceAccountName: number-reverser
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+
+      containers:
+        - name: number-reverser
+          image: number-reverser:1.0.1
+
+          ports:
+            - containerPort: 8000
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
