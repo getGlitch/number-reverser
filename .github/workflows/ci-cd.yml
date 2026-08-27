@@ -36,3 +36,28 @@ jobs:
 
       - name: Unit tests
         run: pytest -q
+
+  security:
+    name: Build and Scan Image
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t number-reverser:${{ github.sha }} \
+            .
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.2.4
+
+      - name: Scan Docker image
+        run: |
+          trivy image \
+            --severity CRITICAL \
+            --exit-code 1 \
+            number-reverser:${{ github.sha }}
