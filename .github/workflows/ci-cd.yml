@@ -37,6 +37,18 @@ jobs:
       - name: Unit tests
         run: pytest -q
 
+      - name: Install Checkov
+        run: |
+          pip install checkov
+          checkov --version
+
+      - name: Terraform security scan
+        run: |
+          checkov \
+            --directory terraform \
+            --framework terraform \
+            --quiet
+
   security:
     name: Build and Scan Image
     runs-on: ubuntu-latest
