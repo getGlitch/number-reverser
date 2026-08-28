@@ -43,11 +43,12 @@ jobs:
           checkov --version
 
       - name: Terraform security scan
+        working-directory: terraform
         run: |
           checkov \
-            --directory terraform \
+            -d . \
             --framework terraform \
-            --quiet
+            --download-external-modules true
 
   security:
     name: Build and Scan Image
