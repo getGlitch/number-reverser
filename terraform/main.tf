@@ -13,8 +13,7 @@ locals {
 }
 
 module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 6.0"
+  source  = "git::https://github.com/terraform-aws-modules/terraform-aws-vpc.git?ref=a0307d4"
 
   name = local.name
   cidr = "10.0.0.0/16"
@@ -53,8 +52,7 @@ module "vpc" {
 }
 
 module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 21.0"
+  source  = "git::https://github.com/terraform-aws-modules/terraform-aws-eks.git?ref=48a429f63cf96361ea2f4b42677d0cc8a9a656e0"
 
   name               = local.name
   kubernetes_version = "1.33"
