@@ -1,0 +1,29 @@
+# .checkov.yaml
+
+skip-check:
+  # Third-party module uses registry versioning internally.
+  # The EKS module's nested KMS module is outside our root configuration.
+  - CKV_TF_1
+
+  # Checkov 3.3.15 does not correctly resolve the EKS module's
+  # dynamic encryption_config block.
+  - CKV_AWS_58
+
+  # EKS endpoint configuration is managed through the EKS module.
+  # Public endpoint is intentionally configured according to project requirements.
+  - CKV_AWS_39
+
+  # Covered by the EKS endpoint configuration decision above.
+  - CKV_AWS_38
+
+  # Findings originate from AWS-managed/required IAM permissions
+  # inside the upstream EKS module.
+  - CKV_AWS_356
+  - CKV_AWS_111
+
+  # Upstream VPC module creates the default security group.
+  - CKV2_AWS_12
+
+  # Upstream EKS module creates security groups that Checkov cannot
+  # statically determine are attached to the resulting resources.
+  - CKV2_AWS_5
