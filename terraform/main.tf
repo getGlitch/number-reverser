@@ -13,7 +13,8 @@ locals {
 }
 
 module "vpc" {
-  source = "git::https://github.com/terraform-aws-modules/terraform-aws-vpc.git?ref=a0307d4d1807de60b3868b96ef1b369808289157"
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
 
   name = local.name
   cidr = "10.0.0.0/16"
@@ -30,7 +31,7 @@ module "vpc" {
     "10.0.102.0/24"
   ]
 
-  enable_nat_gateway = false
+  enable_nat_gateway = true
 
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -56,15 +57,31 @@ module "vpc" {
 }
 
 module "eks" {
-  source = "git::https://github.com/terraform-aws-modules/terraform-aws-eks.git?ref=48a429f63cf96361ea2f4b42677d0cc8a9a656e0"
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
 
   name               = local.name
   kubernetes_version = "1.33"
 
-  endpoint_public_access  = false
+  endpoint_public_access  = true
   endpoint_private_access = true
 
   enable_cluster_creator_admin_permissions = true
+
+  addons = {
+    vpc-cni = {
+      before_compute = true
+      most_recent    = true
+    }
+
+    kube-proxy = {
+      most_recent = true
+    }
+
+    coredns = {
+      most_recent = true
+    }
+  }
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
