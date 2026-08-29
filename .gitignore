@@ -11,13 +11,11 @@ venv/
 !.env.example
 
 # Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-crash.log
-crash.*.log
-*.tfvars
-*.tfvars.json
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/tfplan
+terraform/.external_modules
 
 # Terraform override files
 override.tf

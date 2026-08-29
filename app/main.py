@@ -27,7 +27,7 @@ def reverse_number(number: int) -> int:
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    return {"status": "Tera bhai health hai"}
 
 
 @app.post("/reverse", response_model=NumberResponse)

@@ -11,7 +11,7 @@ resources:
 patches:
   - path: deployment-patch.yaml
 
-images:
-  - name: number-reverser
-    newName: number-reverser
-    newTag: 1.0.1
+#images:
+#  - name: number-reverser
+#    newName: number-reverser
+#    newTag: 1.0.1

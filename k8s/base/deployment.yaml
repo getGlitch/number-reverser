@@ -19,12 +19,17 @@ spec:
     spec:
       serviceAccountName: number-reverser
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       securityContext:
         runAsNonRoot: true
-
+        runAsUser: 100
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: number-reverser
-          image: number-reverser:1.0.1
+          image: ghcr.io/getglitch/number-reverser:225f9f96cda93639a00c7a5363667c94a5feee6d
 
           ports:
             - containerPort: 8000
