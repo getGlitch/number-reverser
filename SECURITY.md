@@ -1,415 +1,409 @@
-
----
-
-# 6. `SECURITY.md`
-
-This is the one I would make **very factual**. No definitions for the sake of definitions.
-
-```markdown
 # Security
 
-## Security Objective
+## Security Scope
 
-The project treats the application delivery path as a security boundary.
+This document records the security controls that are actually implemented in this project.
 
-The objective is to prevent:
-
-- insecure infrastructure from being provisioned
-- vulnerable container images from being released
-- unsigned images from being deployed
-- privileged Kubernetes workloads from being admitted
-- unrestricted workload network communication
-- long-lived cloud credentials from being stored in CI/CD
-
-The controls below are implemented in the repository and pipeline.
+The objective is to demonstrate enforcement rather than simply listing security tools.
 
 ---
 
-# Implemented Controls
+# 1. Security Controls Summary
 
-## 1. Infrastructure as Code Scanning — Checkov
+| Control | Tool / Mechanism | Implemented |
+|---|---|---:|
+| IaC security scanning | Checkov | Yes |
+| Container vulnerability scanning | Trivy | Yes |
+| Critical vulnerability pipeline gate | Trivy | Yes |
+| SBOM generation | Syft | Yes |
+| SBOM artifact publication | GitHub Actions Artifact | Yes |
+| Image signing | Cosign | Yes |
+| Image signature verification | Cosign | Yes |
+| AWS authentication | GitHub OIDC | Yes |
+| Kubernetes admission policy | Kyverno | Yes |
+| Privileged workload prevention | Kyverno | Yes |
+| Resource limit enforcement | Kyverno | Yes |
+| `:latest` image prevention | Kyverno | Yes |
+| Kubernetes network segmentation | NetworkPolicy | Yes |
+| EKS secrets encryption | AWS KMS | Yes |
+| EKS control-plane audit logging | CloudWatch | Yes |
+| Static AWS access keys in CI | Not used | Yes |
 
-### Status
+---
 
-Implemented.
+# 2. Infrastructure Security
 
-### Location
+## Terraform Security Scanning
 
-```text
-.github/workflows/ci-cd.yml
+Checkov scans the Terraform configuration before infrastructure changes are accepted.
 
+Command:
 
-
-Execution
+```bash
 checkov \
-  -d terraform \
+  -d . \
   --framework terraform \
   --download-external-modules true
-Purpose
+```
 
-Terraform configuration is scanned for security and configuration issues before infrastructure changes progress through the pipeline.
+This provides an automated IaC security check for AWS infrastructure configuration.
 
-Gate
+---
 
-Checkov executes as part of the CI validation path.
+# 3. AWS Authentication
 
-A failing Checkov execution causes the job to fail.
+GitHub Actions does not use long-lived AWS access keys.
 
-2. Container Vulnerability Scanning — Trivy
-Status
+Authentication uses GitHub OIDC:
 
-Implemented.
+```text
+GitHub Actions
+      |
+      | OIDC
+      v
+AWS IAM Role
+      |
+      v
+AWS APIs
+```
 
-Execution
+The workflow explicitly requests:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+```
+
+The deployment role is:
+
+```text
+GitHubActions-NumberReverser
+```
+
+This removes the need to store an AWS access key and secret key in the repository.
+
+---
+
+# 4. EKS Access Control
+
+EKS access is configured using EKS access entries.
+
+The GitHub Actions IAM role is explicitly granted EKS access through:
+
+```text
+AmazonEKSClusterAdminPolicy
+```
+
+with cluster-level scope.
+
+The cluster creator bootstrap admin permission is explicitly disabled:
+
+```hcl
+enable_cluster_creator_admin_permissions = false
+```
+
+This keeps the cluster access configuration visible and managed through Terraform.
+
+---
+
+# 5. Container Vulnerability Scanning
+
+Trivy scans the built Docker image.
+
+The pipeline gates on Critical vulnerabilities:
+
+```bash
 trivy image \
   --severity CRITICAL \
   --exit-code 1 \
-  number-reverser:${{ github.sha }}
-Gate
+  number-reverser:<git-sha>
+```
 
-The pipeline explicitly uses:
+The important control is:
 
---severity CRITICAL
---exit-code 1
+```text
+CRITICAL vulnerability
+        ↓
+Exit code 1
+        ↓
+Pipeline failure
+        ↓
+No deployment
+```
 
-Therefore a Critical vulnerability causes the pipeline to fail.
+Therefore the scan is an enforced release gate.
 
-This is an enforcement control, not a report-only scan.
+---
 
-Validation
+# 6. SBOM
 
-The image was also tested locally using the same Critical severity gate.
+Syft generates a CycloneDX JSON SBOM from the built container image.
 
-3. SBOM — Syft
-Status
-
-Implemented.
-
-Tool
-
-Syft.
-
-Output
-CycloneDX JSON
-Execution
-syft number-reverser:${{ github.sha }} \
+```bash
+syft number-reverser:<git-sha> \
   -o cyclonedx-json=sbom.json
-Artifact
+```
 
-The generated SBOM is uploaded using GitHub Actions artifact storage.
+The generated SBOM is uploaded as a GitHub Actions artifact.
 
-Artifact:
+This provides an auditable inventory of software components contained in the image.
 
-number-reverser-sbom
-Purpose
+---
 
-The SBOM records the software components contained in the exact image generated by the pipeline.
+# 7. Image Signing
 
-4. Container Signing — Cosign
-Status
+Cosign is used for keyless container image signing.
 
-Implemented.
+The signing process uses the GitHub Actions OIDC identity.
 
-Method
+```text
+GitHub Actions
+      |
+      v
+OIDC Identity
+      |
+      v
+Cosign
+      |
+      v
+Signed Image
+```
 
-Keyless signing using OIDC.
+No private signing key is committed to the repository.
 
-The GitHub Actions workflow receives an OIDC identity and Cosign uses that identity for signing.
+---
 
-Signing
+# 8. Image Signature Verification
 
-The container image is signed after it is pushed to GHCR.
+The image signature is verified before deployment.
 
-Verification
+Verification validates the expected GitHub Actions identity and OIDC issuer.
 
-The pipeline verifies the signature using:
+The deployment therefore requires a successfully signed artifact.
 
-GitHub repository workflow identity
-+
-Sigstore OIDC issuer
+```text
+Image
+  |
+  v
+Signature Verification
+  |
+  +---- Invalid ----> Deployment blocked
+  |
+  +---- Valid ------> Deployment continues
+```
 
-The verification checks:
+---
 
-certificate identity
-certificate OIDC issuer
+# 9. Immutable Image Identification
 
-This provides provenance verification before deployment.
+The application is not deployed using:
 
-5. GitHub Actions → AWS Authentication
-Status
+```text
+:latest
+```
 
-Implemented.
+Instead, CI/CD uses the Git commit SHA:
 
-Authentication Model
+```text
+ghcr.io/<owner>/number-reverser:<git-sha>
+```
 
-GitHub Actions uses AWS IAM role assumption through GitHub OIDC.
+This creates a direct relationship between:
 
-The workflow does not require a long-lived:
+```text
+Git commit
+      ↓
+Container image
+      ↓
+Kubernetes Deployment
+```
 
-AWS_ACCESS_KEY_ID
-AWS_SECRET_ACCESS_KEY
+---
 
-pair.
+# 10. Kubernetes Admission Security
 
-The workflow requests:
+Kyverno is installed in the cluster and used for admission policy enforcement.
 
-id-token: write
+The implemented policies enforce:
 
-and uses:
+### Privileged container prevention
 
-GitHubActions-NumberReverser
+Privileged containers are not allowed.
 
-as the AWS role.
+### Resource limits
 
-Verification
+Workloads must define resource limits.
 
-The workflow executes:
+### `latest` tag prevention
 
-aws sts get-caller-identity
+Images using the mutable:
 
-after authentication.
+```text
+:latest
+```
 
-Benefit
+tag are not allowed.
 
-AWS credentials are temporary rather than permanently stored in the repository.
+These checks occur at Kubernetes admission time.
 
-6. EKS Access Control
-Status
+```text
+kubectl apply
+      |
+      v
+Kubernetes API
+      |
+      v
+Kyverno
+      |
+      +---- Violation ----> Reject
+      |
+      +---- Compliant ----> Accept
+```
 
-Implemented.
+---
 
-EKS access is managed using EKS access entries.
+# 11. Kubernetes Network Segmentation
 
-The GitHub Actions IAM role is explicitly associated with:
+A Kubernetes NetworkPolicy restricts pod network communication.
 
-AmazonEKSClusterAdminPolicy
+The application is not intended to have unrestricted pod-to-pod connectivity.
 
-for this take-home environment.
+This provides an additional security boundary on top of AWS networking.
 
-The access scope is:
+```text
+AWS VPC / Security Groups
+            +
+Kubernetes NetworkPolicy
+            =
+Layered network controls
+```
 
-cluster
-Rationale
+---
 
-The access relationship is managed declaratively through Terraform rather than manually editing Kubernetes authentication configuration.
+# 12. EKS Secrets Encryption
 
-7. KMS Encryption for Kubernetes Secrets
-Status
-
-Implemented.
+EKS secret data is configured for encryption using AWS KMS.
 
 Terraform configures:
 
+```hcl
 encryption_config = {
   resources = ["secrets"]
 }
+```
 
-The EKS module creates and manages the KMS key used for the encryption configuration.
+The KMS key is managed through the Terraform EKS/KMS module integration.
 
-Purpose
+---
 
-Kubernetes Secret data stored by EKS is protected using AWS KMS encryption.
+# 13. EKS Control-Plane Logging
 
-8. Private Worker Nodes
-Status
+The following EKS control-plane log types are enabled:
 
-Implemented.
+```text
+api
+audit
+authenticator
+controllerManager
+scheduler
+```
 
-The EKS managed node group is configured with:
+CloudWatch log retention is configured for:
 
-private subnets
+```text
+365 days
+```
 
-The worker nodes therefore do not require public IP addressing for normal cluster operation.
+Audit logging provides visibility into Kubernetes API activity.
 
-Outbound access is provided through the NAT Gateway where required.
+---
 
-9. Kubernetes NetworkPolicy
-Status
+# 14. Repository Secret Handling
 
-Implemented.
+No AWS access keys, private signing keys, passwords, or other sensitive credentials are committed to the repository.
 
-A Kubernetes NetworkPolicy is used to restrict pod-to-pod network communication.
+AWS CI/CD authentication is performed using GitHub OIDC.
 
-The objective is to follow least-communication rather than allowing unrestricted workload connectivity.
+The current application does not require application-level secret material to operate.
 
-This provides defense in depth below the AWS VPC/security-group layer.
+---
 
-10. Kyverno Admission Control
-Status
+# 15. Security Gate Model
 
-Implemented.
+The security controls are positioned at different stages of the delivery lifecycle.
 
-Kyverno is deployed using Helm.
-
-Current deployed chart:
-
-Kyverno chart: 3.9.0
-Kyverno version: v1.19.0
-
-Kyverno acts as the Kubernetes admission-control layer.
-
-Policies are used to enforce workload security requirements including:
-
-no privileged containers
-resource limits/controls
-no latest image tags
-
-The important distinction is that these controls are enforced at Kubernetes admission time rather than being documentation-only recommendations.
-
-11. Non-root Container
-Status
-
-Implemented.
-
-The Docker image creates a dedicated application user:
-
-appuser
-
-and group:
-
-appgroup
-
-The application runs using this user rather than root.
-
-The image is based on:
-
-python:3.12-slim
-
-The container image was also tested with Trivy.
-
-12. Immutable Application Image Tags
-Status
-
-Implemented.
-
-The pipeline uses the Git commit SHA as the image tag:
-
-number-reverser:<git-sha>
-
-and:
-
-ghcr.io/<owner>/number-reverser:<git-sha>
-
-The deployment therefore does not use:
-
-:latest
-
-as its release identifier.
-
-This provides a direct relationship between source commit and deployed container version.
-
-13. No Repository-Stored Cloud Credentials
-Status
-
-Implemented.
-
-The GitHub Actions workflow does not use long-lived AWS access keys.
-
-AWS access is obtained through OIDC and IAM role assumption.
-
-The application itself does not require a secret value to perform its core number-reversal functionality.
-
-Security Pipeline
-
-The effective security sequence is:
-
-Terraform
-   |
-   +--> Checkov
-   |
-Docker Image
-   |
-   +--> Trivy
-   |
-   +--> Syft
-   |
-GHCR
-   |
-   +--> Cosign Sign
-   |
-   +--> Cosign Verify
-   |
+```text
+Source
+  |
+  +--> Lint / Unit Tests
+  |
+  +--> Checkov
+  |
+  v
+Container
+  |
+  +--> Trivy
+  |
+  +--> SBOM
+  |
+  +--> Cosign
+  |
+  v
+Registry
+  |
+  v
 Kubernetes
-   |
-   +--> Kyverno
-   |
-   +--> NetworkPolicy
-Controls Required by the Exercise
-Requirement	Implementation
-IaC scanning	Checkov
-Critical image vulnerability gate	Trivy
-SBOM	Syft / CycloneDX
-Image signing	Cosign
-Signature verification	Cosign
-Policy enforcement	Kyverno
-Network segmentation	Kubernetes NetworkPolicy
-No latest deployment	Git SHA image tags
-Non-root container	appuser
-AWS credential security	GitHub OIDC
-Kubernetes Secret encryption	AWS KMS
-Not Implemented / Future Improvements
+  |
+  +--> Signature verification
+  |
+  +--> Kyverno
+  |
+  +--> NetworkPolicy
+  |
+  v
+Running workload
+```
 
-The following were intentionally not implemented within the scope of this take-home project.
+The design intentionally uses multiple independent controls rather than relying on a single scanner.
 
-External Secrets / Vault
+---
 
-The application does not currently require runtime secrets.
+# 16. What Is Not Implemented
 
-For a production service requiring credentials, I would use AWS Secrets Manager with External Secrets Operator or an equivalent managed secret solution.
+The following were not added because they were outside the scope of the current implementation:
 
-kube-bench
+- External Secrets Operator / AWS Secrets Manager integration
+- kube-bench CIS benchmark automation
+- Conftest/OPA Terraform plan gating
+- Production-scale centralized SIEM integration
+- Runtime threat detection
+- Multi-region disaster recovery
+- Production-grade private-only EKS API architecture
 
-A CIS benchmark assessment was not added to the final pipeline.
+These are considered future improvements rather than controls currently claimed as implemented.
 
-For a larger production environment I would add periodic Kubernetes benchmark assessment.
+---
 
-Policy-as-Code for Terraform Plan
+# 17. Security Trade-offs
 
-The project performs Checkov scanning of Terraform configuration.
+The project was designed within the constraints of a small take-home exercise and AWS cost considerations.
 
-A future improvement would be to add a dedicated Conftest/OPA policy gate against the planned infrastructure representation.
+The current EKS API configuration enables both public and private endpoint access.
 
-Production Apply Approval
+For a regulated production environment, access to the Kubernetes API would be further restricted.
 
-The current project demonstrates Terraform initialization, validation and planning in CI.
+The current compute footprint is also intentionally small and is not intended to represent production capacity planning.
 
-For a production environment, infrastructure apply should be placed behind:
+The important objective was to implement enforceable security controls across:
 
-protected environments
-approval
-saved plan artifact
-controlled deployment identity
-
-This keeps infrastructure mutation separate from an unreviewed pull request.
-
-Security Philosophy
-
-The project intentionally uses multiple independent controls.
-
-For example:
-
-Trivy
-
-helps identify vulnerable software.
-
-Cosign
-
-provides image provenance/integrity.
-
-Kyverno
-
-controls what Kubernetes accepts.
-
-NetworkPolicy
-
-limits runtime network communication.
-
-IAM/OIDC
-
-controls CI access to AWS.
-
-KMS
-
-protects Kubernetes Secret storage.
-
-The controls therefore address different parts of the software supply chain and runtime environment.
+```text
+Infrastructure
+CI/CD
+Container
+Identity
+Kubernetes
+Network
+Encryption
+Logging
+```

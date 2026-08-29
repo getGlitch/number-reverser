@@ -1,324 +1,266 @@
-
----
-
-# 8. `docs/TROUBLESHOOTING.md`
-
-This is actually a **very good document for your interview**, because it demonstrates real debugging rather than definitions.
-
-```markdown
 # Troubleshooting
 
-This document records the significant implementation issues encountered while building the project and the resolution used.
+This document records the main implementation and troubleshooting issues encountered while building the project.
 
 ---
 
-## 1. Terraform Plan Reported KMS Policy Changes
+## 1. Terraform Plan Showing KMS Policy Changes
 
 ### Symptom
 
-Terraform reported an in-place update to the EKS KMS key policy.
+Terraform initially showed an in-place update to the EKS KMS key policy.
 
-The plan showed the KMS principal changing from the account root principal to the GitHub Actions IAM role.
+The plan showed the KMS policy principal changing between IAM identities.
+
+Example:
+
+```text
+Terraform will perform the following actions:
+
+module.eks.module.kms.aws_kms_key.this[0]
+will be updated in-place
+```
 
 ### Investigation
 
-The KMS key is created internally by the EKS module through the KMS module.
-
-The EKS module passes KMS policy inputs including:
+The EKS module internally manages the KMS module and builds the key policy from:
 
 ```text
 key_owners
 key_administrators
 key_users
+```
 
+The module configuration was inspected directly under:
 
-The module also adds the EKS cluster role as a key user.
+```text
+.terraform/modules/eks.kms/
+```
 
-The relevant configuration was inspected directly inside:
+The EKS module's KMS configuration was also inspected to understand how the policy was being generated.
 
-.terraform/modules/eks.kms
-Resolution
+### Resolution
 
-The EKS module's actual KMS policy construction was inspected instead of manually creating a second KMS policy.
+The configuration was reviewed and Terraform was re-run until the resulting configuration matched the intended infrastructure.
 
-The Terraform configuration was then aligned with the intended IAM principals.
+Final validation:
 
-After the correction:
+```text
+No changes. Your infrastructure matches the configuration.
+```
 
-terraform plan
+This confirmed that Terraform state and configuration were synchronized.
 
-returned:
+---
 
-No changes.
-Your infrastructure matches the configuration.
-Lesson
+# 2. EKS Access Entry Configuration
 
-When a Terraform module creates a nested resource, the first step should be to inspect the module's input variables and generated policy rather than attempting to override the resource blindly.
+### Symptom
 
-2. EKS Access Entry Configuration
-Symptom
+The cluster required explicit access for the GitHub Actions deployment role.
 
-The cluster required explicit EKS access configuration for the GitHub Actions role.
+### Resolution
 
-Investigation
+EKS access entries were configured through Terraform.
 
-The Terraform state showed EKS access entries and policy associations.
+The GitHub Actions role:
 
-The relevant access configuration used:
+```text
+arn:aws:iam::598907064200:role/GitHubActions-NumberReverser
+```
 
-principal_arn
+was associated with:
+
+```text
 AmazonEKSClusterAdminPolicy
-cluster access scope
-Resolution
+```
 
-The access entries were managed through the EKS module:
+at cluster scope.
 
-access_entries = {
-  github_actions = {
-    principal_arn = "..."
-    ...
-  }
-}
+The cluster creator bootstrap admin permission was disabled:
 
-The GitHub Actions IAM role was granted the required EKS access policy.
+```hcl
+enable_cluster_creator_admin_permissions = false
+```
 
-Verification
+This made the access configuration explicit in Terraform.
 
-The Terraform refresh showed:
+---
 
-aws_eks_access_entry.this["github_actions"]
+# 3. GitHub Actions AWS Authentication
+
+### Problem
+
+The CI/CD workflow needed AWS access without storing long-lived AWS access keys.
+
+### Resolution
+
+GitHub Actions OIDC was used.
+
+```text
+GitHub Actions
+      |
+      | OIDC token
+      v
+AWS IAM
+      |
+      v
+GitHubActions-NumberReverser
+```
+
+The workflow uses:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+```
+
+AWS identity can be verified using:
+
+```bash
+aws sts get-caller-identity
+```
+
+---
+
+# 4. Cosign Image Signing Authentication
+
+### Symptom
+
+Cosign signing initially failed with:
+
+```text
+UNAUTHORIZED: authentication required
+```
+
+The error occurred because Cosign needed authenticated access to the GHCR image.
+
+### Cause
+
+The workflow was attempting to sign an image stored in GitHub Container Registry without the required registry authentication being available to the signing step.
+
+### Resolution
+
+The GHCR authentication flow was corrected so that the workflow authenticates to the registry before performing image signing and verification.
+
+The final signing flow is:
+
+```text
+Build
+  ↓
+Scan
+  ↓
+Login to GHCR
+  ↓
+Push image
+  ↓
+Cosign sign
+  ↓
+Cosign verify
+```
+
+The image is referenced using the Git commit SHA.
+
+---
+
+# 5. Cosign Tag Warning
+
+### Symptom
+
+Cosign reported:
+
+```text
+Image reference uses a tag, not a digest
+```
+
+### Meaning
+
+A tag such as:
+
+```text
+number-reverser:<git-sha>
+```
+
+is more mutable than an OCI digest.
+
+### Engineering Consideration
+
+The Git SHA tag provides application-version traceability, while a production-grade signing workflow can additionally resolve the pushed image to its immutable digest and sign that digest.
+
+The signing design therefore recognizes the distinction between:
+
+```text
+Tag
+```
 
 and:
 
-aws_eks_access_policy_association.this["github_actions_admin"]
-Lesson
+```text
+Digest
+```
 
-AWS IAM authentication and Kubernetes authorization are separate concerns.
+and can be extended to use digest-based signing for stronger artifact identity.
 
-Having an IAM role does not automatically mean that the role has the required EKS permissions.
+---
 
-3. Terraform Drift Detection
-Symptom
+# 6. Terraform Drift Validation
 
-Terraform reported:
+After infrastructure changes, Terraform was used to compare the actual AWS resources with the declared configuration.
 
-Objects have changed outside of Terraform
+The successful result was:
 
-during a plan.
+```text
+No changes.
+Your infrastructure matches the configuration.
+```
 
-Investigation
+This confirms that the Terraform state accurately represents the intended infrastructure at the time of validation.
 
-Terraform refresh compared the recorded state against the current AWS infrastructure.
+---
 
-The plan identified resources whose observed AWS attributes differed from the previous state.
+# 7. Kubernetes Deployment Verification
 
-Resolution
+After deploying the application, the following checks are used:
 
-The actual infrastructure and Terraform configuration were compared before deciding whether the difference represented legitimate AWS-managed state or configuration drift.
+```bash
+kubectl get nodes
+kubectl get deployments -n number-reverser-dev
+kubectl get pods -n number-reverser-dev
+kubectl get svc -n number-reverser-dev
+```
 
-Lesson
+The rollout is additionally checked using:
 
-A Terraform plan is not only a deployment mechanism.
-
-It is also an important mechanism for detecting infrastructure drift.
-
-4. Container Security Scan
-Symptom
-
-The container needed to satisfy the security requirement that Critical vulnerabilities fail the pipeline.
-
-Implementation
-
-The same Trivy gate was used in CI:
-
-trivy image \
-  --severity CRITICAL \
-  --exit-code 1 \
-  number-reverser:${GITHUB_SHA}
-Verification
-
-The image was also scanned locally before relying on the CI result.
-
-The scan inspected both:
-
-operating-system packages
-Python dependencies
-Lesson
-
-A scanner is useful only when its result affects the release decision.
-
-The important configuration is:
-
---exit-code 1
-
-because it turns a vulnerability finding into a pipeline failure.
-
-5. Cosign Signing Failed Against GHCR
-Symptom
-
-Cosign produced:
-
-UNAUTHORIZED: authentication required
-
-when attempting to sign the GHCR image.
-
-Investigation
-
-The image had already been built and tagged, but Cosign still needed registry access to resolve the image reference.
-
-The command was attempting to access:
-
-ghcr.io/getglitch/number-reverser:<sha>
-
-without authenticated registry access.
-
-Resolution
-
-The pipeline was structured so that the GHCR login occurs before the image is signed:
-
-Docker Build
-    |
-Trivy
-    |
-Syft
-    |
-GHCR Login
-    |
-Image Push
-    |
-Cosign Sign
-    |
-Cosign Verify
-
-The GitHub Actions token is used for GHCR authentication.
-
-Additional Note
-
-Cosign also warns that signing by mutable tags is less robust than signing a digest.
-
-A production refinement would capture the pushed image digest and perform signing and verification against:
-
-image@sha256:<digest>
-
-rather than only the SHA tag.
-
-Lesson
-
-Container signing is part of the registry workflow.
-
-Build success alone does not guarantee that the signing tool can resolve or access the published artifact.
-
-6. Kubernetes Deployment Verification
-Symptom
-
-A successful:
-
-kubectl apply
-
-does not necessarily mean that the application is healthy.
-
-Resolution
-
-The deployment pipeline explicitly waits for the rollout:
-
+```bash
 kubectl rollout status \
   deployment/number-reverser \
   -n number-reverser-dev \
   --timeout=180s
+```
 
-It then checks:
-
-kubectl get deployments
-kubectl get pods
-kubectl get svc
-Lesson
-
-Deployment should be treated as:
-
-Apply
-  +
-Rollout
-  +
-Verification
-
-rather than assuming that kubectl apply alone represents a successful release.
-
-7. Kustomize Image Update
-Symptom
-
-The deployment needs to use the exact image generated by the current GitHub Actions run.
-
-Resolution
-
-The pipeline updates the development overlay using:
-
-kustomize edit set image \
-  ghcr.io/getglitch/number-reverser=ghcr.io/getglitch/number-reverser:${GITHUB_SHA}
-
-The rendered configuration is inspected before deployment.
-
-Verification
-
-The pipeline runs:
-
-kubectl kustomize k8s/overlays/dev | grep "image:"
-
-before applying the manifests.
-
-Lesson
-
-Rendering the Kubernetes manifests before deployment catches incorrect image substitutions before they reach the cluster.
-
-General Debugging Approach
-
-The troubleshooting approach used throughout the project was:
-
-Observe
-  |
-Identify the failing layer
-  |
-Inspect actual state
-  |
-Inspect module/tool behavior
-  |
-Make the smallest configuration change
-  |
-Run the relevant validation
-  |
-Run the complete pipeline
-  |
-Verify the final state
-
-This prevents fixing symptoms without understanding the underlying resource or pipeline behavior.
-
-
+This prevents the pipeline from reporting a successful deployment before Kubernetes has actually completed the rollout.
 
 ---
 
-## Final repository layout
+# 8. Debugging Approach
 
-I recommend committing it exactly like this:
+The troubleshooting approach used throughout the project was:
 
 ```text
-number-reverser/
-│
-├── README.md
-├── SECURITY.md
-│
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── TERRAFORM.md
-│   ├── CI-CD.md
-│   ├── KUBERNETES.md
-│   ├── DEPLOYMENT.md
-│   └── TROUBLESHOOTING.md
-│
-├── app/
-├── terraform/
-├── k8s/
-├── Dockerfile
-├── .dockerignore
-│
-└── .github/
-    └── workflows/
-        └── ci-cd.yml
+Observe failure
+     ↓
+Read exact error
+     ↓
+Identify responsible layer
+     ↓
+Inspect Terraform/module/workflow state
+     ↓
+Make smallest required change
+     ↓
+Run validation
+     ↓
+Verify actual infrastructure
+```
+
+The objective was to avoid making unrelated changes when troubleshooting infrastructure or CI/CD failures.

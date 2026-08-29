@@ -1,273 +1,365 @@
+# CI/CD Pipeline
+
+## 1. Pipeline Objective
+
+The pipeline is designed to prevent untested, vulnerable, unsigned, or non-compliant workloads from reaching the Kubernetes cluster.
+
+The pipeline separates application testing, infrastructure validation, container security, and deployment.
 
 ---
 
-# 4. `docs/CI-CD.md`
+## 2. Pipeline Flow
 
-```markdown
-# CI/CD Pipeline
+```text
+                         Git Push / Pull Request
+                                  |
+                                  v
+                         +-------------------+
+                         | Lint + Unit Tests |
+                         +---------+---------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Terraform Validation      |
+                     | Terraform Plan             |
+                     | Checkov                    |
+                     +-------------+-------------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Docker Build               |
+                     +-------------+-------------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Trivy Image Scan           |
+                     | CRITICAL = Pipeline Fail  |
+                     +-------------+-------------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Syft SBOM                  |
+                     +-------------+-------------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Push Image to GHCR         |
+                     +-------------+-------------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Cosign Sign                |
+                     +-------------+-------------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Cosign Verify              |
+                     +-------------+-------------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Deploy to EKS              |
+                     | Kustomize                  |
+                     +-------------+-------------+
+                                   |
+                                   v
+                     +---------------------------+
+                     | Rollout Verification       |
+                     +---------------------------+
+```
 
-## Objective
+---
 
-The pipeline is designed to prevent untested or insecure application changes from reaching the Kubernetes cluster.
+## 3. Triggering
 
-The workflow is triggered by:
+The workflow runs for:
 
-```yaml
-push:
-  branches:
-    - main
+```text
+push → main
+pull_request → main
+```
 
-pull_request:
-  branches:
-    - main
+Deployment is restricted to pushes to the `main` branch.
 
+This prevents pull requests from directly deploying workloads.
 
+---
 
-Pipeline Flow
+# 4. Stage 1 — Application Quality
 
+The first stage performs:
 
-                    Pull Request / Push
-                            |
-                            v
-                    +---------------+
-                    | Lint & Tests  |
-                    +---------------+
-                            |
-                            v
-                    +---------------+
-                    | Terraform     |
-                    | Security      |
-                    +---------------+
-                            |
-                            v
-                    +---------------+
-                    | Docker Build  |
-                    +---------------+
-                            |
-                            v
-                    +---------------+
-                    | Trivy Scan    |
-                    +---------------+
-                            |
-                            v
-                    +---------------+
-                    | SBOM / Syft   |
-                    +---------------+
-                            |
-                    main push only
-                            |
-                            v
-                    +---------------+
-                    | GHCR Push     |
-                    +---------------+
-                            |
-                            v
-                    +---------------+
-                    | Cosign Sign   |
-                    +---------------+
-                            |
-                            v
-                    +---------------+
-                    | Cosign Verify |
-                    +---------------+
-                            |
-                            v
-                    +---------------+
-                    | EKS Deploy    |
-                    +---------------+
-                            |
-                            v
-                    +---------------+
-                    | Rollout Check |
-                    +---------------+
+```text
+Python setup
+Dependency installation
+Ruff linting
+Pytest unit tests
+```
 
+Commands include:
 
-
-
-Stage 1 — Lint and Unit Tests
-
-Python 3.12 is used.
-
-Dependencies are installed and Ruff performs static linting.
-
-Tests are executed using:
-
+```bash
+ruff check app/
 pytest -q
+```
 
-A test failure stops downstream stages.
+If linting or unit tests fail, downstream stages do not execute.
 
-Stage 2 — Terraform Security
+---
 
-Checkov scans the Terraform configuration:
+# 5. Stage 2 — Infrastructure Validation
 
-checkov \
-  -d terraform \
-  --framework terraform \
-  --download-external-modules true
+Terraform is initialized and validated.
 
-This checks the infrastructure code for security and configuration issues before deployment.
+The stage performs:
 
-Stage 3 — Terraform Validation
-
-The Terraform stage performs:
-
+```bash
 terraform init
 terraform fmt -check -recursive
 terraform validate
 terraform plan -input=false
+```
 
-AWS authentication is performed using the GitHub OIDC role.
+The pipeline also authenticates to AWS using GitHub OIDC.
 
-The pipeline verifies the identity using:
+No long-lived AWS access key is stored in GitHub Actions.
 
-aws sts get-caller-identity
-Stage 4 — Docker Build
+---
 
-The application image is built using:
+# 6. Stage 3 — IaC Security
 
-docker build \
-  -t number-reverser:${{ github.sha }} \
-  .
+Checkov scans the Terraform configuration.
 
-The Git commit SHA is used as the immutable application version identifier.
+```bash
+checkov \
+  -d . \
+  --framework terraform \
+  --download-external-modules true
+```
 
-Stage 5 — Trivy
+The objective is to detect insecure infrastructure configuration before deployment.
 
-Trivy scans the built image.
+---
 
-The current pipeline gates on:
+# 7. Stage 4 — Docker Build
 
-CRITICAL
+The application image is built using the repository Dockerfile.
 
-The important configuration is:
+The image is tagged using the Git commit SHA:
 
---severity CRITICAL
---exit-code 1
+```text
+number-reverser:<git-sha>
+```
 
-Therefore a Critical vulnerability causes the job to fail.
+Using the commit SHA provides immutable application-version traceability.
 
-This is a real pipeline gate rather than a report-only scan.
+---
 
-Stage 6 — SBOM
+# 8. Stage 5 — Container Vulnerability Scanning
 
-Syft generates a CycloneDX JSON SBOM:
+Trivy scans the built container image.
 
-syft number-reverser:${{ github.sha }} \
+The pipeline is configured to fail on Critical vulnerabilities.
+
+Conceptually:
+
+```bash
+trivy image \
+  --severity CRITICAL \
+  --exit-code 1 \
+  number-reverser:<git-sha>
+```
+
+The important behavior is:
+
+```text
+Critical vulnerability
+        |
+        v
+Pipeline failure
+        |
+        X
+No deployment
+```
+
+The scan is therefore a release gate rather than a reporting-only step.
+
+---
+
+# 9. Stage 6 — SBOM
+
+Syft generates a CycloneDX JSON Software Bill of Materials.
+
+```bash
+syft number-reverser:<git-sha> \
   -o cyclonedx-json=sbom.json
+```
 
 The SBOM is uploaded as a GitHub Actions artifact.
 
-This provides a software component inventory for the exact image produced by the build.
+This provides visibility into the packages included in the container image.
 
-Stage 7 — Container Registry
+---
 
-For pushes to main, the image is tagged:
+# 10. Stage 7 — Image Publication
 
+For pushes to `main`, the image is published to GitHub Container Registry.
+
+Example:
+
+```text
 ghcr.io/<owner>/number-reverser:<git-sha>
+```
 
-and pushed to GitHub Container Registry.
+The registry image is tied to the source commit through the SHA tag.
 
-Pull requests do not publish deployment images.
+---
 
-Stage 8 — Cosign
+# 11. Stage 8 — Image Signing
 
-The container image is signed using Cosign.
+Cosign is used for keyless image signing.
 
-Keyless signing uses GitHub Actions OIDC identity.
+GitHub Actions provides the OIDC identity used by Cosign.
 
-The signature is then verified using the GitHub Actions certificate identity and Sigstore OIDC issuer.
+The signing model is:
 
-The verification step checks that the signature originates from the expected GitHub Actions workflow identity.
+```text
+GitHub Actions
+      |
+      | OIDC identity
+      v
+Cosign
+      |
+      v
+Signed OCI Image
+```
 
-Stage 9 — Deployment
+No private signing key is stored in the repository.
 
-Deployment occurs only for:
+---
 
-push to main
+# 12. Stage 9 — Signature Verification
 
-The workflow authenticates to AWS and configures EKS access:
+Before deployment, the image signature is verified.
 
-aws eks update-kubeconfig \
-  --name number-reverser \
-  --region ap-south-1
+Verification checks the expected GitHub Actions OIDC identity and issuer.
 
-Cluster connectivity is verified using:
+The deployment therefore depends on both:
 
-kubectl get nodes
-Stage 10 — Kustomize
+```text
+Image exists
+     AND
+Image signature is valid
+```
 
-The deployment overlay is:
+---
 
-k8s/overlays/dev
+# 13. Stage 10 — Kubernetes Deployment
 
-The image reference is updated to the current Git SHA.
+The deployment job:
 
-The rendered manifest is inspected before applying it.
+1. Authenticates to AWS.
+2. Updates kubeconfig.
+3. Verifies EKS access.
+4. Installs Kustomize.
+5. Updates the image reference.
+6. Renders the manifests.
+7. Applies the Kubernetes configuration.
+8. Waits for the rollout.
+9. Verifies the resulting resources.
 
-Stage 11 — Kubernetes Deployment
+The deployed image is:
 
-The manifests are applied using:
+```text
+ghcr.io/<owner>/number-reverser:<git-sha>
+```
 
-kubectl apply -k k8s/overlays/dev
+---
 
-The rollout is then monitored:
+# 14. Stage 11 — Rollout Verification
 
+The pipeline waits for the Kubernetes Deployment to become ready.
+
+```bash
 kubectl rollout status \
   deployment/number-reverser \
   -n number-reverser-dev \
   --timeout=180s
+```
 
-Finally:
+It then checks:
 
+```bash
 kubectl get deployments
 kubectl get pods
 kubectl get svc
+```
 
-are used to verify the deployed resources.
+A failed rollout causes the deployment job to fail.
 
-Pull Request Behavior
+---
 
-Pull requests run validation and security stages but do not deploy to EKS.
+# 15. Authentication Model
 
-This prevents unmerged changes from reaching the development cluster.
+GitHub Actions authenticates to AWS using:
 
-Main Branch Behavior
+```text
+GitHub OIDC
+     |
+     v
+AWS IAM Role
+     |
+     v
+AWS API
+```
 
-A successful push to main progresses through:
+The role is:
 
-Test
-  ↓
-Security
-  ↓
-Terraform Plan
-  ↓
-Image Publish
-  ↓
-Image Signing
-  ↓
-Signature Verification
-  ↓
-EKS Deployment
-  ↓
-Rollout Verification
+```text
+GitHubActions-NumberReverser
+```
 
-Why the Pipeline Is Structured This Way
+The workflow uses:
 
-Each stage has a specific responsibility:
+```yaml
+permissions:
+  id-token: write
+  contents: read
+```
 
+This avoids storing static AWS access keys in GitHub Secrets.
 
-| Stage              | Purpose                          |
-| ------------------ | -------------------------------- |
-| Lint               | Code quality                     |
-| Unit tests         | Application correctness          |
-| Checkov            | IaC security                     |
-| Terraform validate | Configuration correctness        |
-| Terraform plan     | Infrastructure change visibility |
-| Docker build       | Reproducible artifact            |
-| Trivy              | Vulnerability gate               |
-| Syft               | Software inventory               |
-| GHCR               | Artifact storage                 |
-| Cosign             | Artifact provenance/integrity    |
-| EKS deployment     | Delivery                         |
-| Rollout check      | Deployment verification          |
+---
 
+# 16. Pull Request vs Main Branch
+
+The pipeline distinguishes validation from deployment.
+
+### Pull Request
+
+Runs validation/security checks but does not deploy.
+
+### Main branch
+
+Runs the complete release flow and deploys the approved image to EKS.
+
+This prevents arbitrary pull-request code from being deployed to the cluster.
+
+---
+
+# 17. Security Gates
+
+The important gates are:
+
+| Gate | Failure Result |
+|---|---|
+| Ruff | Pipeline fails |
+| Unit tests | Pipeline fails |
+| Terraform validation | Pipeline fails |
+| Checkov | Security gate |
+| Trivy Critical | Pipeline fails |
+| Image signing | Pipeline fails |
+| Signature verification | Pipeline fails |
+| Kubernetes rollout | Deployment fails |
+
+The goal is to make security controls enforceable rather than informational.

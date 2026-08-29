@@ -1,214 +1,255 @@
 # Number Reverser
 
-A small Python HTTP service deployed to Amazon EKS with Terraform-managed infrastructure and a security-gated GitHub Actions CI/CD pipeline.
+A small containerized HTTP service deployed to Amazon EKS using Terraform, Kubernetes, GitHub Actions, and security-focused CI/CD controls.
 
-The application is intentionally simple. The focus of this project is the engineering around it:
+The application itself is intentionally simple. The primary focus of this project is the engineering around it:
 
 - Infrastructure as Code
+- Secure AWS authentication from GitHub Actions
 - Kubernetes deployment
-- Container security
-- IaC security scanning
-- Vulnerability scanning
+- Infrastructure and container security scanning
 - SBOM generation
-- Keyless container signing
-- Kubernetes admission policies
-- Network isolation
-- AWS IAM/OIDC integration
-- Automated deployment
+- Container image signing and verification
+- Kubernetes admission policy enforcement
+- Network segmentation
+- Reproducible deployments
 
-## Architecture
+---
+
+## Project Overview
 
 ```text
-                         GitHub
-                           |
-                           v
-                  GitHub Actions
-                           |
-        +------------------+------------------+
-        |                  |                  |
-        v                  v                  v
-   Unit Tests          Checkov             Docker
-        |             Terraform             Build
-        |                  |                  |
-        +------------------+------------------+
-                           |
-                           v
-                       Trivy
-                    CRITICAL gate
-                           |
-                           v
-                         Syft
-                         SBOM
-                           |
-                           v
-                       GHCR Push
-                           |
-                           v
-                      Cosign Sign
-                           |
-                           v
-                    Cosign Verify
-                           |
-                           v
-                     AWS OIDC
-                           |
-                           v
-                         EKS
-                           |
-                           v
-                    Kustomize Deploy
-                           |
-                           v
-                 Number Reverser Pods
-                           |
-                           v
-                       Service
+Developer
+   |
+   | Git push / Pull Request
+   v
+GitHub
+   |
+   v
+GitHub Actions
+   |
+   +--> Lint
+   +--> Unit Tests
+   +--> Terraform Validation
+   +--> Checkov
+   +--> Docker Build
+   +--> Trivy
+   +--> Syft SBOM
+   +--> Cosign Signing
+   |
+   v
+GitHub Container Registry
+   |
+   v
+Amazon EKS
+   |
+   +--> Kyverno admission policies
+   +--> NetworkPolicy
+   +--> Kubernetes Deployment
+   +--> Service
+```
 
+---
 
-AWS Infrastructure
+## Technology Stack
 
-Terraform provisions:
+| Area | Technology |
+|---|---|
+| Application | Python |
+| Container | Docker |
+| Cloud | AWS |
+| Kubernetes | Amazon EKS |
+| Infrastructure | Terraform |
+| CI/CD | GitHub Actions |
+| Container Registry | GitHub Container Registry |
+| IaC Security | Checkov |
+| Image Security | Trivy |
+| SBOM | Syft |
+| Image Signing | Cosign |
+| Policy Enforcement | Kyverno |
+| Network Security | Kubernetes NetworkPolicy |
+| Configuration | Kustomize |
 
-VPC
-Public and private subnets
-Internet Gateway
-NAT Gateway
-Route tables
-Security groups
-Amazon EKS cluster
-Managed node group
-EKS addons
-KMS key for Kubernetes secret encryption
-CloudWatch log configuration
-EKS access entries
-IAM/OIDC integration
+---
 
-The EKS worker nodes are deployed into private subnets.
+## Application
 
-The current development environment uses:
-
-AWS Region: ap-south-1
-EKS cluster: number-reverser
-Kubernetes: 1.33
-Node instance type: t3.small
-Node group desired size: 1
-Node group min/max: 1/2
-Application
-
-The service accepts a number and returns its reversed representation.
+The service reverses numeric input.
 
 Example:
 
-12345 -> 54321
+```text
+12345 → 54321
+```
 
-The application also handles the required edge cases, including negative numbers, zeros, invalid input and integer-size considerations according to the behavior documented in the application tests.
+The implementation also handles the required edge cases:
 
-CI/CD
+- Negative numbers
+- Leading/trailing zeros
+- Non-numeric input
+- Integer overflow
 
-The pipeline is intentionally separated into logical stages:
+The application has unit tests covering the expected behavior.
 
+---
 
-Lint & Unit Tests
-        |
-        v
-Terraform Security Scan
-        |
-        v
-Container Build & Security
-        |
-        v
-Terraform Plan
-        |
-        v
-Image Push & Signing
-        |
-        v
-EKS Deployment
-        |
-        v
+## Infrastructure
+
+AWS infrastructure is provisioned entirely through Terraform.
+
+The environment includes:
+
+- VPC
+- Public and private subnets
+- NAT gateway
+- Amazon EKS cluster
+- Managed node group
+- IAM roles and policies
+- EKS access entries
+- KMS encryption for Kubernetes secrets
+- CloudWatch logging
+- EKS managed add-ons
+
+Worker nodes run in private subnets rather than being directly exposed to the internet.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the complete architecture.
+
+See [`docs/TERRAFORM.md`](docs/TERRAFORM.md) for the Terraform implementation.
+
+---
+
+## CI/CD
+
+The GitHub Actions pipeline validates the application and infrastructure before deployment.
+
+The main flow is:
+
+```text
+Lint
+  ↓
+Unit Tests
+  ↓
+Terraform Validation + Checkov
+  ↓
+Docker Build
+  ↓
+Trivy Image Scan
+  ↓
+SBOM Generation
+  ↓
+Push Image
+  ↓
+Cosign Sign
+  ↓
+Cosign Verify
+  ↓
+Deploy to EKS
+  ↓
 Rollout Verification
+```
 
+Critical container vulnerabilities fail the pipeline.
 
-Pull requests execute validation and security checks without deploying.
+The container image is signed using Cosign with GitHub Actions OIDC and the signature is verified before deployment.
 
-A push to main continues through image publishing, signing and deployment.
+See [`docs/CI-CD.md`](docs/CI-CD.md).
 
-Security Controls
+---
 
-Implemented security controls include:
+## Kubernetes Security
 
-Checkov Terraform scanning
-Trivy container vulnerability scanning
-Critical vulnerability pipeline gate
-Syft CycloneDX SBOM
-SBOM uploaded as a GitHub Actions artifact
-Cosign keyless/OIDC image signing
-Cosign signature verification
-GitHub Actions OIDC authentication to AWS
-EKS access entries
-KMS encryption for Kubernetes secrets
-Kubernetes admission control with Kyverno
-Kubernetes NetworkPolicy
-Non-root application container
-Versioned image tags using Git commit SHA
-No long-lived AWS credentials stored in GitHub
+The workload is deployed into a dedicated namespace:
 
-See SECURITY.md for the implemented controls and their locations.
+```text
+number-reverser-dev
+```
 
-Documentation
-Document	Purpose
-Architecture	AWS, EKS and application architecture
-Terraform	Infrastructure and state management
-CI/CD	Pipeline stages and security gates
-Kubernetes	Kubernetes deployment and policies
-Security	Implemented security controls
-Deployment	Deployment and teardown procedures
-Troubleshooting	Problems encountered and resolutions
-Repository Structure
-.
-├── app/
-│   ├── application code
-│   ├── requirements.txt
-│   └── tests
-│
-├── terraform/
-│   ├── main.tf
-│   ├── providers.tf
-│   ├── variables.tf
-│   └── outputs.tf
-│
-├── k8s/
-│   ├── base/
-│   └── overlays/
-│       └── dev/
-│
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── TERRAFORM.md
-│   ├── CI-CD.md
-│   ├── KUBERNETES.md
-│   ├── DEPLOYMENT.md
-│   └── TROUBLESHOOTING.md
-│
-├── SECURITY.md
-├── Dockerfile
-├── .dockerignore
-└── .github/
-    └── workflows/
-        └── ci-cd.yml
-Teardown
+The deployment uses:
 
-The infrastructure is Terraform-managed and can be removed with:
+- Kubernetes Deployment
+- Kubernetes Service
+- Kustomize
+- NetworkPolicy
+- Kyverno admission policies
+- Non-`:latest` image references
+- Resource requests and limits
+- Restricted workload configuration
 
+Kyverno is used to enforce workload security requirements at admission time.
+
+See [`docs/KUBERNETES.md`](docs/KUBERNETES.md).
+
+---
+
+## Security
+
+Security controls are implemented at multiple layers:
+
+```text
+Source
+  ↓
+Checkov
+  ↓
+Container
+  ↓
+Trivy
+  ↓
+SBOM
+  ↓
+Cosign
+  ↓
+Kubernetes
+  ↓
+Kyverno
+  ↓
+NetworkPolicy
+```
+
+No long-lived AWS access keys are stored in GitHub Actions.
+
+GitHub Actions assumes the AWS deployment role using GitHub OIDC.
+
+See [`SECURITY.md`](SECURITY.md) for the implemented security controls and evidence.
+
+---
+
+## Deployment
+
+Infrastructure and application deployment are intentionally separated.
+
+Terraform manages the AWS infrastructure.
+
+Kubernetes/Kustomize manages the application workload.
+
+For deployment, verification, and teardown instructions see:
+
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+
+---
+
+## Repository Documentation
+
+| Document | Purpose |
+|---|---|
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | AWS, EKS, networking and application architecture |
+| [`TERRAFORM.md`](docs/TERRAFORM.md) | Terraform structure, state, IAM, EKS, VPC and KMS |
+| [`CI-CD.md`](docs/CI-CD.md) | Pipeline stages, security gates and deployment flow |
+| [`KUBERNETES.md`](docs/KUBERNETES.md) | Kubernetes workload, Kustomize, Kyverno and NetworkPolicy |
+| [`SECURITY.md`](SECURITY.md) | Security controls actually implemented |
+| [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Deploy, verify and destroy procedures |
+| [`TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Issues encountered and their resolutions |
+
+---
+
+## Cost and Teardown
+
+This project was designed around AWS free-tier/trial constraints.
+
+The environment should be destroyed when it is no longer required.
+
+```bash
 cd terraform
 terraform destroy
+```
 
-Always verify the resources that will be removed before confirming the destroy operation.
-
-Project Objective
-
-The goal was not to build a complex application.
-
-The objective was to demonstrate how a small service can be treated as a production-style workload:
-
-code -> test -> scan -> package -> attest -> deploy -> verify
+Always review the Terraform plan before applying infrastructure changes.

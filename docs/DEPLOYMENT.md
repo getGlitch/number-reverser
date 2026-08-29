@@ -1,147 +1,250 @@
+# Deployment Guide
 
----
-
-# 7. `docs/DEPLOYMENT.md`
-
-```markdown
-# Deployment
-
-## Prerequisites
+## 1. Prerequisites
 
 The following tools are required for local infrastructure operations:
 
 - AWS CLI
 - Terraform
 - kubectl
-- Docker
 - Git
+- Docker
 
-The GitHub Actions pipeline provides the automated CI/CD path.
+AWS credentials must have permission to provision the required infrastructure.
 
-## AWS Authentication
+For CI/CD, GitHub Actions uses AWS OIDC rather than static AWS access keys.
 
-AWS credentials must have the permissions required to provision the Terraform-managed resources.
+---
 
-For CI/CD, GitHub Actions uses OIDC and assumes the configured IAM role.
+# 2. Infrastructure Deployment
 
-Do not commit AWS access keys to the repository.
-
-## Terraform Initialization
-
-Change into the Terraform directory:
+Move into the Terraform directory:
 
 ```bash
 cd terraform
-
+```
 
 Initialize Terraform:
 
+```bash
 terraform init
-Validate Configuration
+```
 
-Run:
+Format and validate:
 
+```bash
 terraform fmt -check -recursive
 terraform validate
-Review Infrastructure Changes
+```
 
-Run:
+Review the proposed infrastructure:
 
+```bash
 terraform plan
+```
 
-Always review the plan before applying infrastructure changes.
+Apply the infrastructure:
 
-Apply Infrastructure
-
-For controlled infrastructure provisioning:
-
+```bash
 terraform apply
+```
 
-Review the proposed resources and explicitly approve the operation.
+Review the plan carefully before approving the apply operation.
 
-Verify EKS
+---
 
-Configure kubectl:
+# 3. Verify AWS Resources
 
+Verify the AWS identity:
+
+```bash
+aws sts get-caller-identity
+```
+
+Verify the EKS cluster:
+
+```bash
+aws eks describe-cluster \
+  --name number-reverser \
+  --region ap-south-1
+```
+
+---
+
+# 4. Configure kubectl
+
+Update the local kubeconfig:
+
+```bash
 aws eks update-kubeconfig \
   --name number-reverser \
   --region ap-south-1
+```
 
-Verify access:
+Verify cluster access:
 
+```bash
 kubectl get nodes
-Application Deployment
+```
 
-The normal application deployment path is GitHub Actions.
+---
 
-A push to main causes the pipeline to:
+# 5. Verify Kubernetes Resources
 
-Build the image.
-Scan the image.
-Generate the SBOM.
-Push the image to GHCR.
-Sign the image.
-Verify the signature.
-Update the Kustomize image.
-Apply the Kubernetes manifests.
-Wait for the rollout.
-Verify Kubernetes resources.
-Verify Application
+Check the application namespace:
 
-Check the namespace:
+```bash
+kubectl get namespace number-reverser-dev
+```
 
-kubectl get all -n number-reverser-dev
+Check the Deployment:
 
-Check pods:
-
-kubectl get pods -n number-reverser-dev
-
-Check deployment:
-
+```bash
 kubectl get deployment \
-  number-reverser \
   -n number-reverser-dev
+```
 
-Check service:
+Check Pods:
 
-kubectl get svc -n number-reverser-dev
-Rollout Verification
+```bash
+kubectl get pods \
+  -n number-reverser-dev
+```
+
+Check the Service:
+
+```bash
+kubectl get svc \
+  -n number-reverser-dev
+```
+
+---
+
+# 6. Application Deployment
+
+The GitHub Actions pipeline handles application deployment to EKS.
+
+The deployment process is:
+
+```text
+Build image
+    ↓
+Security scan
+    ↓
+Generate SBOM
+    ↓
+Push image
+    ↓
+Sign image
+    ↓
+Verify signature
+    ↓
+Update Kustomize image
+    ↓
+kubectl apply -k
+    ↓
+Wait for rollout
+```
+
+The image is identified using the Git commit SHA.
+
+Example:
+
+```text
+ghcr.io/<owner>/number-reverser:<git-sha>
+```
+
+---
+
+# 7. Manual Kubernetes Deployment
+
+For troubleshooting or controlled local testing:
+
+```bash
+kubectl apply -k k8s/overlays/dev
+```
+
+Verify the rollout:
+
+```bash
 kubectl rollout status \
   deployment/number-reverser \
   -n number-reverser-dev \
   --timeout=180s
-Inspect Image
-kubectl get deployment \
-  number-reverser \
+```
+
+---
+
+# 8. Verify the Application
+
+Inspect the running Pods:
+
+```bash
+kubectl get pods \
   -n number-reverser-dev \
-  -o jsonpath='{.spec.template.spec.containers[*].image}'
+  -o wide
+```
 
-The expected image should contain the Git commit SHA rather than latest.
+Inspect the Deployment:
 
-Inspect Kyverno
-kubectl get pods -n kyverno
+```bash
+kubectl describe deployment \
+  number-reverser \
+  -n number-reverser-dev
+```
 
-Check the installed release:
+Inspect application logs:
 
-helm list -n kyverno
-Teardown
+```bash
+kubectl logs \
+  deployment/number-reverser \
+  -n number-reverser-dev
+```
 
-When the environment is no longer required:
+---
 
+# 9. Teardown
+
+When the environment is no longer required, destroy the AWS infrastructure:
+
+```bash
 cd terraform
-terraform plan -destroy
-
-Review the destroy plan.
-
-Then:
-
 terraform destroy
+```
 
-Confirm the operation only after reviewing the resources scheduled for deletion.
+Review the resources carefully before confirming.
 
-Cost Control
+The purpose of teardown is to prevent unnecessary cloud charges after the evaluation.
 
-This project is intentionally sized as a development environment.
+---
 
-Before finishing the review period, destroy unused AWS resources to avoid unnecessary cloud charges.
+# 10. Deployment Separation
 
+The project intentionally separates infrastructure and application deployment.
+
+### Terraform
+
+Manages:
+
+```text
+VPC
+EKS
+IAM
+KMS
+Node Groups
+AWS Add-ons
+```
+
+### Kubernetes/Kustomize
+
+Manages:
+
+```text
+Namespace
+Deployment
+Service
+NetworkPolicy
+Application configuration
+```
+
+This prevents application releases from requiring unnecessary recreation or modification of AWS infrastructure.

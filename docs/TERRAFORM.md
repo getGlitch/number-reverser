@@ -1,190 +1,269 @@
+# Terraform
+
+## 1. Purpose
+
+Terraform is responsible for provisioning and managing the AWS infrastructure required by the application.
+
+The infrastructure is designed so that a new environment can be recreated from code rather than manually configured through the AWS console.
 
 ---
 
-# 3. `docs/TERRAFORM.md`
-
-```markdown
-# Terraform and Infrastructure
-
-## Objective
-
-Terraform is the source of truth for the AWS infrastructure and supporting Kubernetes platform components.
-
-The configuration avoids manually creating AWS resources through the console.
-
-## Module Structure
-
-The project uses established Terraform modules for major infrastructure components.
-
-The EKS module is:
+## 2. Terraform Structure
 
 ```text
+terraform/
+├── main.tf
+├── variables.tf
+├── outputs.tf
+├── providers.tf
+├── versions.tf
+└── ...
+```
+
+The main Terraform configuration composes reusable modules rather than defining every AWS resource directly.
+
+---
+
+## 3. Terraform Modules
+
+The environment primarily uses:
+
+```text
+terraform-aws-modules/vpc/aws
 terraform-aws-modules/eks/aws
+terraform-aws-modules/kms/aws
+```
 
+The VPC module manages networking.
 
+The EKS module manages:
 
-Version:
+- EKS cluster
+- Managed node groups
+- IAM resources
+- EKS add-ons
+- Access entries
+- KMS encryption integration
+- OIDC provider
 
-~> 21.0
+---
 
-The VPC is also managed using the Terraform AWS VPC module.
+## 4. VPC
 
-This keeps the root configuration focused on environment-specific decisions rather than reimplementing AWS networking primitives.
+The VPC contains:
 
-AWS Resources
-
-The Terraform configuration manages:
-
-VPC
-Public subnets
-Private subnets
-Internet Gateway
+```text
+Public Subnets
+Private Subnets
 NAT Gateway
-Route tables
-Security groups
-EKS cluster
-Managed node group
-EKS addons
-IAM roles and policy attachments
-EKS OIDC provider
-KMS encryption
-CloudWatch log configuration
-EKS access entries
-VPC Design
+Internet Gateway
+Route Tables
+Security Groups
+```
 
-The VPC separates public and private networking.
+The EKS worker nodes use private subnets.
 
-Public resources provide internet-facing connectivity where required.
+The private subnet route configuration provides outbound internet connectivity through NAT where required.
 
-Worker nodes are placed in private subnets.
+---
 
-The private route tables use the NAT Gateway for outbound internet access.
+## 5. EKS Configuration
 
-This allows nodes to retrieve required external resources without assigning public IP addresses directly to the worker nodes.
+The cluster is configured for Kubernetes `1.33`.
 
-EKS Configuration
+Both EKS API endpoint modes are enabled:
 
-The cluster configuration includes:
-
-kubernetes_version = "1.33"
-
+```hcl
 endpoint_public_access  = true
 endpoint_private_access = true
+```
 
-The EKS addons include:
+The cluster also enables control-plane logging.
 
-VPC CNI
-kube-proxy
-CoreDNS
-Node Group
+---
 
-The development node group is intentionally small:
+## 6. Managed Node Group
 
+The project uses an EKS managed node group.
+
+Current development sizing:
+
+```text
 Instance type: t3.small
-Desired: 1
-Minimum: 1
-Maximum: 2
+Desired:       1
+Minimum:       1
+Maximum:       2
+Capacity:      ON_DEMAND
+```
 
-The nodes use private subnets.
+This is intentionally conservative for cost control.
 
-The node group uses ON_DEMAND capacity.
+---
 
-Terraform State
+## 7. EKS Access Entries
 
-Terraform state is stored remotely in S3.
+EKS access entries are defined through Terraform.
 
-The backend configuration uses:
+The cluster creator admin permission bootstrap is disabled:
 
-Bucket: number-reverser-tfstate-...
-Region: ap-south-1
-Encryption: enabled
-Locking: S3 lockfile
+```hcl
+enable_cluster_creator_admin_permissions = false
+```
 
-The state is therefore not dependent on a local workstation state file.
+Access is explicitly configured using EKS access entries.
 
-This also allows CI/CD and other authorized operators to work against the same state.
+The configured principals include:
 
-Authentication
+```text
+arn:aws:iam::598907064200:root
 
-GitHub Actions authenticates to AWS using OIDC.
+arn:aws:iam::598907064200:role/GitHubActions-NumberReverser
+```
 
-The workflow assumes:
+Both are associated with:
 
-GitHubActions-NumberReverser
+```text
+AmazonEKSClusterAdminPolicy
+```
 
-This avoids storing long-lived AWS access keys in GitHub repository secrets.
+with cluster-level scope.
 
-The workflow requests:
+---
 
-id-token: write
+## 8. KMS Encryption
 
-and the AWS credentials action exchanges the GitHub OIDC identity for temporary AWS credentials.
+The EKS cluster uses KMS encryption for Kubernetes secrets.
 
-EKS Access Entries
-
-The EKS cluster uses EKS access entries.
-
-The configured GitHub Actions role receives the EKS cluster administrator access policy required by this project.
-
-The cluster creator access configuration was also explicitly managed rather than relying on the implicit cluster-creator bootstrap permission.
-
-KMS Encryption
-
-EKS secrets encryption is enabled:
-
+```hcl
 encryption_config = {
   resources = ["secrets"]
 }
+```
 
-The EKS module creates and manages a KMS key for this encryption configuration.
+The EKS module creates and manages the KMS key.
 
-The KMS policy grants key usage to the EKS cluster role as required by the module.
+The KMS policy includes:
 
-Terraform Validation
+- Default account-root permissions
+- Key administration permissions
+- EKS cluster role key usage permissions
 
-Before infrastructure changes are accepted, the pipeline performs:
+The GitHub Actions role is intentionally not used as the KMS encryption key administrator.
 
+---
+
+## 9. EKS Add-ons
+
+The cluster uses the following managed add-ons:
+
+```text
+vpc-cni
+kube-proxy
+coredns
+```
+
+The configuration allows the module to select the most recent compatible versions.
+
+`vpc-cni` is configured to be installed before compute resources.
+
+---
+
+## 10. Terraform State
+
+Terraform state is managed deliberately rather than committed to Git.
+
+The state file must never be committed to the repository.
+
+The working state contains infrastructure information required by Terraform to calculate changes.
+
+For a production implementation, the preferred design would be:
+
+```text
+Terraform
+    |
+    v
+S3 Remote State
+    |
+    +--> Versioning
+    +--> Encryption
+    +--> Restricted IAM access
+```
+
+with state locking enabled using the appropriate AWS-supported mechanism.
+
+---
+
+## 11. Terraform Workflow
+
+The standard workflow is:
+
+```bash
+terraform init
 terraform fmt -check -recursive
 terraform validate
 terraform plan
+terraform apply
+```
 
-The pipeline also runs Checkov against the Terraform configuration.
+### Initialize
 
-Plan vs Apply
+```bash
+cd terraform
+terraform init
+```
 
-The CI pipeline currently uses Terraform for validation and planning.
+### Format
 
-Infrastructure creation or modification is intentionally treated as a controlled infrastructure operation rather than automatically applying every pull request.
+```bash
+terraform fmt -check -recursive
+```
 
-The important workflow is:
+### Validate
 
-terraform fmt
-      |
+```bash
 terraform validate
-      |
-Checkov
-      |
+```
+
+### Review Changes
+
+```bash
 terraform plan
-      |
-review
-      |
-controlled terraform apply
+```
 
-For a larger production environment, I would introduce a dedicated protected apply stage with environment approval and a saved Terraform plan artifact.
+### Apply
 
-Drift Detection
+```bash
+terraform apply
+```
 
-Terraform plan compares the declared configuration with the current state and infrastructure.
+Terraform apply is intentionally treated as an infrastructure operation requiring review and approval.
 
-If infrastructure changes outside Terraform, the next plan can report the detected difference.
+The CI pipeline currently performs validation and plan checks; application deployment is handled separately through Kubernetes.
 
-This provides a mechanism to identify configuration drift rather than silently accepting manual changes.
+---
 
-Teardown
+## 12. Security Scanning
 
-The environment can be removed using:
+Checkov scans the Terraform configuration:
 
+```bash
+checkov \
+  -d . \
+  --framework terraform \
+  --download-external-modules true
+```
+
+The purpose is to identify insecure infrastructure configuration before infrastructure changes are accepted.
+
+---
+
+## 13. Destroy
+
+The complete environment can be removed using:
+
+```bash
 cd terraform
 terraform destroy
+```
 
-Before running destroy, review the proposed resources carefully because this removes the infrastructure managed by the Terraform state.
+The destroy operation should be reviewed carefully because it removes the provisioned AWS infrastructure.

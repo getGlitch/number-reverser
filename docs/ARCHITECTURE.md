@@ -1,293 +1,254 @@
+# Architecture
+
+## 1. Overview
+
+The project uses Amazon EKS as the Kubernetes platform and Terraform as the infrastructure provisioning layer.
+
+The architecture intentionally keeps worker nodes in private subnets while exposing only the required application entry points.
 
 ---
 
-# 2. `docs/ARCHITECTURE.md`
-
-```markdown
-# Architecture
-
-## Overview
-
-The Number Reverser is deployed as a containerized workload on Amazon EKS.
-
-Infrastructure is provisioned using Terraform and the application is deployed through GitHub Actions using Kubernetes manifests managed with Kustomize.
-
-The design separates:
-
-1. AWS infrastructure
-2. Kubernetes platform
-3. Application workload
-4. CI/CD
-5. Security controls
-
-## High-Level Architecture
+## 2. High-Level Architecture
 
 ```text
-                           Internet
-                              |
-                              |
-                       AWS VPC / Public
-                              |
-                    +---------+---------+
-                    |                   |
-             Internet Gateway       NAT Gateway
-                                        |
-                                        v
-                              Private Subnets
-                                        |
-                              +---------+---------+
-                              |                   |
-                         EKS Control Plane    EKS Nodes
-                                                  |
-                                           +------+------+
-                                           |             |
-                                      Kyverno       Application
-                                      Policies          Pods
-                                                         |
-                                                  NetworkPolicy
-                                                         |
-                                                       Service
+                         Internet
+                            |
+                            |
+                     GitHub / Developer
+                            |
+                            v
+                    GitHub Actions
+                            |
+                +-----------+-----------+
+                |                       |
+                v                       v
+        GitHub Container         AWS via OIDC
+           Registry                  |
+                |                     |
+                |                     v
+                |                 AWS IAM
+                |                     |
+                |                     v
+                |                  EKS API
+                |                     |
+                +----------+----------+
+                           |
+                           v
+                    Amazon EKS Cluster
+                           |
+              +------------+------------+
+              |                         |
+              v                         v
+       Kubernetes API             Worker Nodes
+                                    Private Subnets
+                                         |
+                                    +----+----+
+                                    |         |
+                                    v         v
+                               Application  Add-ons
+                                  Pods
+                                    |
+                                    v
+                              Kubernetes Service
+```
 
+---
 
-AWS Layer
+## 3. AWS Network Architecture
 
-Terraform creates the AWS networking and EKS resources.
+The VPC contains separate public and private subnets.
 
-The VPC contains public and private subnets.
+```text
+                         AWS Region
+                        ap-south-1
+                            |
+                           VPC
+                            |
+             +--------------+--------------+
+             |                             |
+       Public Subnets                 Private Subnets
+             |                             |
+       NAT Gateway                  EKS Worker Nodes
+             |                             |
+             |                       Application Pods
+             |
+       Internet Gateway
+```
 
-The worker nodes are placed in private subnets rather than directly exposing the nodes to the internet.
+The EKS worker nodes are placed in private subnets.
 
-The private subnet routing uses NAT for outbound connectivity where required.
+This prevents worker nodes from requiring direct public internet exposure.
 
-EKS Layer
+Private subnet workloads use NAT for outbound connectivity where required.
 
-The cluster is:
+---
 
-Cluster: number-reverser
-Region: ap-south-1
-Kubernetes: 1.33
+## 4. EKS
 
-A managed node group is used for worker capacity.
+The cluster configuration is:
 
-Current development sizing:
+| Property | Value |
+|---|---|
+| Cluster | `number-reverser` |
+| Region | `ap-south-1` |
+| Kubernetes | `1.33` |
+| Compute | EKS Managed Node Group |
+| Node Instance | `t3.small` |
+| Desired Nodes | `1` |
+| Minimum Nodes | `1` |
+| Maximum Nodes | `2` |
 
-Instance type: t3.small
-Desired: 1
-Minimum: 1
-Maximum: 2
-Capacity: ON_DEMAND
+The current sizing is intentionally small to control development cost.
 
-This sizing was selected to keep the development environment small while still allowing basic node scaling.
+---
 
-Kubernetes Layer
+## 5. EKS Access
 
-The application is deployed into:
+EKS access is configured using EKS access entries rather than relying on manually maintained `aws-auth` configuration.
 
-number-reverser-dev
+Two identities are explicitly configured:
 
-Kustomize is used to maintain the Kubernetes configuration and update the application image for each deployment.
+```text
+AWS Account Root
+       |
+       +--> EKS Cluster Admin Access
 
-The deployment process updates the image to the Git commit SHA:
+GitHubActions-NumberReverser Role
+       |
+       +--> EKS Cluster Admin Access
+```
 
-ghcr.io/<owner>/number-reverser:<git-sha>
+The GitHub Actions role is the identity used by the deployment workflow.
 
-This avoids using a mutable latest deployment tag.
+---
 
-Security Boundaries
+## 6. Encryption
 
-There are multiple security boundaries:
+Kubernetes secrets are encrypted using AWS KMS through the EKS encryption configuration.
 
-AWS IAM
+```text
+Kubernetes Secret
+       |
+       v
+EKS Encryption Configuration
+       |
+       v
+AWS KMS Key
+       |
+       v
+Encrypted Secret Storage
+```
 
-GitHub Actions does not use a long-lived AWS access key.
+The KMS key is created and managed through the Terraform EKS module.
 
-The workflow authenticates through GitHub's OIDC integration and assumes the configured AWS IAM role.
+---
 
-EKS Access
+## 7. Logging
 
-EKS access is managed through EKS access entries rather than relying on manually maintained cluster authentication configuration.
+EKS control-plane logging is enabled for:
 
-Network
-
-Worker nodes run in private subnets.
-
-Kubernetes NetworkPolicy provides workload-level traffic restrictions.
-
-Kubernetes Admission
-
-Kyverno runs as an admission controller and enforces workload security requirements before workloads are accepted by the cluster.
-
-Container
-
-The application image uses a slim Python base image and creates a dedicated non-root user.
-
-Logging
-
-EKS control-plane log types enabled by Terraform include:
-
+```text
 API
 Audit
 Authenticator
 Controller Manager
 Scheduler
+```
 
-The configured CloudWatch retention is 365 days for this environment.
+CloudWatch log retention is configured for 365 days.
 
-Design Trade-offs
-One EKS Node
+---
 
-The development environment uses one desired node to control cost.
+## 8. Application Architecture
 
-The node group allows scaling up to two nodes.
+The application is packaged as a Docker image and deployed to EKS.
 
-This is appropriate for the take-home environment but is not equivalent to a production multi-AZ node strategy.
+```text
+GitHub Repository
+       |
+       v
+Docker Build
+       |
+       v
+GHCR
+       |
+       v
+EKS Deployment
+       |
+       v
+Application Pod
+       |
+       v
+Kubernetes Service
+```
 
-Public EKS API Endpoint
+The image is identified using the Git commit SHA rather than the mutable `latest` tag.
 
-The EKS API endpoint currently has public access enabled as well as private access.
+Example:
 
-This simplifies administration from the GitHub Actions runner and development environment.
-
-For a regulated production environment, I would further restrict the public endpoint using an allowlist or move administration toward private connectivity.
-
-NAT Gateway
-
-A NAT Gateway provides outbound internet connectivity for resources in private subnets.
-
-For a production multi-AZ architecture, NAT would normally be designed per availability zone to avoid a single-AZ dependency.
-
-Data Flow
-Developer pushes code to GitHub.
-GitHub Actions runs tests and security checks.
-Docker builds the application image.
-Trivy scans the image.
-Syft generates the SBOM.
-The image is pushed to GHCR.
-Cosign creates a keyless signature.
-Cosign verifies the signature.
-GitHub Actions authenticates to AWS using OIDC.
-Kubernetes credentials are configured for EKS.
-Kustomize updates the image reference.
-Kubernetes applies the manifests.
-The deployment rollout is monitored.
-AWS Layer
-
-Terraform creates the AWS networking and EKS resources.
-
-The VPC contains public and private subnets.
-
-The worker nodes are placed in private subnets rather than directly exposing the nodes to the internet.
-
-The private subnet routing uses NAT for outbound connectivity where required.
-
-EKS Layer
-
-The cluster is:
-
-Cluster: number-reverser
-Region: ap-south-1
-Kubernetes: 1.33
-
-A managed node group is used for worker capacity.
-
-Current development sizing:
-
-Instance type: t3.small
-Desired: 1
-Minimum: 1
-Maximum: 2
-Capacity: ON_DEMAND
-
-This sizing was selected to keep the development environment small while still allowing basic node scaling.
-
-Kubernetes Layer
-
-The application is deployed into:
-
-number-reverser-dev
-
-Kustomize is used to maintain the Kubernetes configuration and update the application image for each deployment.
-
-The deployment process updates the image to the Git commit SHA:
-
+```text
 ghcr.io/<owner>/number-reverser:<git-sha>
+```
 
-This avoids using a mutable latest deployment tag.
+This provides traceability between:
 
-Security Boundaries
+```text
+Git commit
+    ↓
+Container image
+    ↓
+Kubernetes deployment
+```
 
-There are multiple security boundaries:
+---
 
-AWS IAM
+## 9. Network Segmentation
 
-GitHub Actions does not use a long-lived AWS access key.
+A Kubernetes NetworkPolicy restricts pod-to-pod communication.
 
-The workflow authenticates through GitHub's OIDC integration and assumes the configured AWS IAM role.
+The policy is designed around required application communication rather than allowing unrestricted pod networking.
 
-EKS Access
+This provides a second layer of network isolation inside the VPC:
 
-EKS access is managed through EKS access entries rather than relying on manually maintained cluster authentication configuration.
+```text
+AWS Security Groups
+        +
+Kubernetes NetworkPolicy
+        =
+Layered Network Controls
+```
 
-Network
+---
 
-Worker nodes run in private subnets.
+## 10. Design Trade-offs
 
-Kubernetes NetworkPolicy provides workload-level traffic restrictions.
+### Single managed node group
 
-Kubernetes Admission
+A single small node group keeps the environment inexpensive and simple for a take-home exercise.
 
-Kyverno runs as an admission controller and enforces workload security requirements before workloads are accepted by the cluster.
+For production, node capacity would normally be distributed across multiple Availability Zones with appropriate capacity and disruption planning.
 
-Container
+### Public EKS endpoint
 
-The application image uses a slim Python base image and creates a dedicated non-root user.
+The EKS API endpoint is currently configured with public access to simplify CI/CD connectivity.
 
-Logging
+Private access is also enabled.
 
-EKS control-plane log types enabled by Terraform include:
+For a regulated production environment, access to the Kubernetes API would normally be restricted further through network controls or a private access architecture.
 
-API
-Audit
-Authenticator
-Controller Manager
-Scheduler
+### Small node size
 
-The configured CloudWatch retention is 365 days for this environment.
+`t3.small` is sufficient for this workload and keeps the development environment cost-conscious.
 
-Design Trade-offs
-One EKS Node
+Production sizing would be based on measured workload requirements.
 
-The development environment uses one desired node to control cost.
+---
 
-The node group allows scaling up to two nodes.
+## 11. Primary Design Principles
 
-This is appropriate for the take-home environment but is not equivalent to a production multi-AZ node strategy.
+The architecture follows four primary principles:
 
-Public EKS API Endpoint
-
-The EKS API endpoint currently has public access enabled as well as private access.
-
-This simplifies administration from the GitHub Actions runner and development environment.
-
-For a regulated production environment, I would further restrict the public endpoint using an allowlist or move administration toward private connectivity.
-
-NAT Gateway
-
-A NAT Gateway provides outbound internet connectivity for resources in private subnets.
-
-For a production multi-AZ architecture, NAT would normally be designed per availability zone to avoid a single-AZ dependency.
-
-Data Flow
-Developer pushes code to GitHub.
-GitHub Actions runs tests and security checks.
-Docker builds the application image.
-Trivy scans the image.
-Syft generates the SBOM.
-The image is pushed to GHCR.
-Cosign creates a keyless signature.
-Cosign verifies the signature.
-GitHub Actions authenticates to AWS using OIDC.
-Kubernetes credentials are configured for EKS.
-Kustomize updates the image reference.
-Kubernetes applies the manifests.
-The deployment rollout is monitored.
+1. Infrastructure is reproducible through Terraform.
+2. Worker nodes are not directly exposed to the internet.
+3. CI/CD authenticates to AWS using OIDC rather than static credentials.
+4. Kubernetes admission and network controls provide defense in depth.
