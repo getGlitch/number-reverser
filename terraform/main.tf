@@ -100,6 +100,10 @@ module "eks" {
     }
   }
 
+  kms_key_administrators = [
+    "arn:aws:iam::598907064200:root"
+  ]
+
   addons = {
     vpc-cni = {
       before_compute = true
