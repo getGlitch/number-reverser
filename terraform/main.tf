@@ -68,9 +68,23 @@ module "eks" {
 
   #  enable_cluster_creator_admin_permissions = true
 
-  enable_cluster_creator_admin_permissions = true
+  enable_cluster_creator_admin_permissions = false
 
   access_entries = {
+    cluster_creator = {
+      principal_arn = "arn:aws:iam::598907064200:root"
+
+      policy_associations = {
+        admin = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+
     github_actions = {
       principal_arn = "arn:aws:iam::598907064200:role/GitHubActions-NumberReverser"
 
