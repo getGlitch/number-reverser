@@ -195,8 +195,15 @@ jobs:
 
       - name: Install Kustomize
         run: |
-          sudo apt-get update
-          sudo apt-get install -y kustomize
+          KUSTOMIZE_VERSION=v5.7.1
+          curl -sSL \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            -o /tmp/kustomize.tar.gz
+
+          tar -xzf /tmp/kustomize.tar.gz -C /tmp
+          sudo mv /tmp/kustomize /usr/local/bin/kustomize
+
+          kustomize version
 
       - name: Update image
         run: |
