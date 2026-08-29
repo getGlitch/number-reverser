@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
@@ -11,9 +12,19 @@ on:
 permissions:
   contents: read
 
+env:
+  AWS_REGION: ap-south-1
+  EKS_CLUSTER_NAME: number-reverser
+  IMAGE_NAME: number-reverser
+
 jobs:
+
+  # ============================================================
+  # STAGE 1 - APPLICATION LINT & UNIT TESTS
+  # ============================================================
+
   test:
-    name: Lint and Unit Tests
+    name: "1. Test - Lint & Unit Tests"
     runs-on: ubuntu-latest
 
     steps:
@@ -32,10 +43,26 @@ jobs:
           pip install pytest ruff
 
       - name: Lint
-        run: ruff check app/
+        run: |
+          ruff check app/
 
       - name: Unit tests
-        run: pytest -q
+        run: |
+          pytest -q
+
+
+  # ============================================================
+  # STAGE 2 - TERRAFORM SECURITY SCAN
+  # ============================================================
+
+  terraform_security:
+    name: "2. Security - Terraform Checkov Scan"
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Install Checkov
         run: |
@@ -50,16 +77,139 @@ jobs:
             --framework terraform \
             --download-external-modules true
 
-  security:
-    name: Build and Scan Image
+
+  # ============================================================
+  # STAGE 3 - TERRAFORM FORMAT
+  # ============================================================
+
+  terraform_format:
+    name: "3. Terraform - Format Check"
+    runs-on: ubuntu-latest
+    needs: terraform_security
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.16.0"
+
+      - name: Terraform format check
+        run: |
+          terraform fmt -check -recursive
+
+
+  # ============================================================
+  # STAGE 4 - TERRAFORM VALIDATE
+  # ============================================================
+
+  terraform_validate:
+    name: "4. Terraform - Validate"
+    runs-on: ubuntu-latest
+    needs: terraform_format
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.16.0"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::598907064200:role/GitHubActions-NumberReverser
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+      - name: Terraform version
+        run: |
+          terraform version
+
+      - name: Terraform init
+        run: |
+          terraform init
+
+      - name: Terraform validate
+        run: |
+          terraform validate
+
+
+  # ============================================================
+  # STAGE 5 - TERRAFORM PLAN
+  # ============================================================
+
+  terraform_plan:
+    name: "5. Terraform - Plan"
+    runs-on: ubuntu-latest
+    needs: terraform_validate
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.16.0"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::598907064200:role/GitHubActions-NumberReverser
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+      - name: Terraform init
+        run: |
+          terraform init
+
+      - name: Terraform plan
+        run: |
+          terraform plan -input=false
+
+
+  # ============================================================
+  # STAGE 6 - BUILD CONTAINER IMAGE
+  # ============================================================
+
+  build:
+    name: "6. Build - Docker Image"
     runs-on: ubuntu-latest
     needs: test
 
     permissions:
       contents: read
-      id-token: write
-      packages: write
-
 
     steps:
       - name: Checkout
@@ -68,20 +218,49 @@ jobs:
       - name: Build Docker image
         run: |
           docker build \
-            -t number-reverser:${{ github.sha }} \
+            -t ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            .
+
+      - name: Verify Docker image
+        run: |
+          docker images ${{ env.IMAGE_NAME }}
+
+
+  # ============================================================
+  # STAGE 7 - CONTAINER SECURITY SCAN
+  # ============================================================
+
+  container_security:
+    name: "7. Security - Trivy Image Scan"
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:${{ github.sha }} \
             .
 
       - name: Install Trivy
         run: |
           sudo apt-get update
           sudo apt-get install -y wget gnupg
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+
+          wget -qO - \
+            https://aquasecurity.github.io/trivy-repo/deb/public.key \
             | gpg --dearmor \
             | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
             | sudo tee /etc/apt/sources.list.d/trivy.list
+
           sudo apt-get update
           sudo apt-get install -y trivy
+
           trivy --version
 
       - name: Scan Docker image
@@ -89,18 +268,42 @@ jobs:
           trivy image \
             --severity CRITICAL \
             --exit-code 1 \
-            number-reverser:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+
+  # ============================================================
+  # STAGE 8 - GENERATE SBOM
+  # ============================================================
+
+  sbom:
+    name: "8. Security - Generate SBOM"
+    runs-on: ubuntu-latest
+    needs: container_security
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            .
 
       - name: Install Syft
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+          curl -sSfL \
+            https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b "$HOME/.local/bin"
+
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
           syft version
 
       - name: Generate SBOM
         run: |
-          syft number-reverser:${{ github.sha }} \
+          syft \
+            ${{ env.IMAGE_NAME }}:${{ github.sha }} \
             -o cyclonedx-json=sbom.json
 
       - name: Upload SBOM
@@ -110,62 +313,134 @@ jobs:
           path: sbom.json
           if-no-files-found: error
 
+
+  # ============================================================
+  # STAGE 9 - PUSH IMAGE TO GHCR
+  # ============================================================
+
+  push_image:
+    name: "9. Registry - Push Image to GHCR"
+    runs-on: ubuntu-latest
+    needs:
+      - sbom
+      - terraform_plan
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            .
+
       - name: Log in to GHCR
-        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tag image for GHCR
-        if: github.event_name == 'push'
+      - name: Set image owner
         run: |
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "OWNER=$OWNER" >> "$GITHUB_ENV"
 
+      - name: Tag image
+        run: |
           docker tag \
-            number-reverser:${{ github.sha }} \
-            ghcr.io/$OWNER/number-reverser:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            ghcr.io/$OWNER/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-      - name: Push image to GHCR
-        if: github.event_name == 'push'
+      - name: Push image
         run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-
           docker push \
-            ghcr.io/$OWNER/number-reverser:${{ github.sha }}
+            ghcr.io/$OWNER/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
+
+  # ============================================================
+  # STAGE 10 - SIGN CONTAINER IMAGE
+  # ============================================================
+
+  sign_image:
+    name: "10. Security - Sign Container Image"
+    runs-on: ubuntu-latest
+    needs: push_image
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
       - name: Install Cosign
-        if: github.event_name == 'push'
         uses: sigstore/cosign-installer@main
 
-      - name: Sign container image
-        if: github.event_name == 'push'
-        env:
-          OWNER: ${{ github.repository_owner }}
+      - name: Set image owner
         run: |
-          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-          IMAGE="ghcr.io/$OWNER/number-reverser:${{ github.sha }}"
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "OWNER=$OWNER" >> "$GITHUB_ENV"
+
+      - name: Sign container image
+        run: |
+          IMAGE="ghcr.io/$OWNER/${{ env.IMAGE_NAME }}:${{ github.sha }}"
 
           cosign sign --yes "$IMAGE"
 
-      - name: Verify container signature
-        if: github.event_name == 'push'
-        env:
-          OWNER: ${{ github.repository_owner }}
+
+  # ============================================================
+  # STAGE 11 - VERIFY CONTAINER SIGNATURE
+  # ============================================================
+
+  verify_signature:
+    name: "11. Security - Verify Image Signature"
+    runs-on: ubuntu-latest
+    needs: sign_image
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@main
+
+      - name: Set image owner
         run: |
-          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-          IMAGE="ghcr.io/$OWNER/number-reverser:${{ github.sha }}"
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "OWNER=$OWNER" >> "$GITHUB_ENV"
+
+      - name: Verify container signature
+        run: |
+          IMAGE="ghcr.io/$OWNER/${{ env.IMAGE_NAME }}:${{ github.sha }}"
 
           cosign verify "$IMAGE" \
             --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/.*" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 
 
-  terraform:
-    name: Terraform Plan
+  # ============================================================
+  # STAGE 12 - TERRAFORM APPLY
+  # ============================================================
+
+  terraform_apply:
+    name: "12. Terraform - Apply"
     runs-on: ubuntu-latest
-    needs: test
+    needs:
+      - terraform_plan
+      - verify_signature
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     permissions:
       contents: read
@@ -188,37 +463,33 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::598907064200:role/GitHubActions-NumberReverser
-          aws-region: ap-south-1
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
-      - name: Terraform version
-        run: |
-          terraform version
-
       - name: Terraform init
         run: |
           terraform init
 
-      - name: Terraform format check
+      - name: Terraform apply
         run: |
-          terraform fmt -check -recursive
+          terraform apply \
+            -auto-approve \
+            -input=false
 
-      - name: Terraform validate
-        run: |
-          terraform validate
 
-      - name: Terraform plan
-        run: |
-          terraform plan -input=false
+  # ============================================================
+  # STAGE 13 - DEPLOY APPLICATION TO EKS
+  # ============================================================
 
   deploy:
-    name: Deploy to EKS
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: "13. Deploy - Application to EKS"
     runs-on: ubuntu-latest
-    needs: security
+    needs: terraform_apply
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     permissions:
       contents: read
@@ -232,28 +503,32 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::598907064200:role/GitHubActions-NumberReverser
-          aws-region: ap-south-1
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
-        run: aws sts get-caller-identity
+        run: |
+          aws sts get-caller-identity
 
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
-            --name number-reverser \
-            --region ap-south-1
+            --name ${{ env.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
 
       - name: Verify EKS access
-        run: kubectl get nodes
+        run: |
+          kubectl get nodes
 
       - name: Install Kustomize
         run: |
           KUSTOMIZE_VERSION=v5.7.1
+
           curl -sSL \
             "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
             -o /tmp/kustomize.tar.gz
 
           tar -xzf /tmp/kustomize.tar.gz -C /tmp
+
           sudo mv /tmp/kustomize /usr/local/bin/kustomize
 
           kustomize version
@@ -261,22 +536,107 @@ jobs:
       - name: Update image
         run: |
           cd k8s/overlays/dev
+
           kustomize edit set image \
             ghcr.io/getglitch/number-reverser=ghcr.io/getglitch/number-reverser:${{ github.sha }}
 
-          echo "===== kustomization.yaml after image update ====="
+          echo "===== kustomization.yaml ====="
           cat kustomization.yaml
-
-          echo "===== Rendered image ====="
-          kubectl kustomize . | grep "image:"
 
       - name: Verify rendered image
         run: |
           kubectl kustomize k8s/overlays/dev | grep "image:"
 
+
+  # ============================================================
+  # STAGE 14 - DEPLOY KUBERNETES MANIFESTS
+  # ============================================================
+
+  kubernetes_deploy:
+    name: "14. Kubernetes - Deploy Application"
+    runs-on: ubuntu-latest
+    needs: deploy
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::598907064200:role/GitHubActions-NumberReverser
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Install Kustomize
+        run: |
+          KUSTOMIZE_VERSION=v5.7.1
+
+          curl -sSL \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            -o /tmp/kustomize.tar.gz
+
+          tar -xzf /tmp/kustomize.tar.gz -C /tmp
+
+          sudo mv /tmp/kustomize /usr/local/bin/kustomize
+
+      - name: Update image
+        run: |
+          cd k8s/overlays/dev
+
+          kustomize edit set image \
+            ghcr.io/getglitch/number-reverser=ghcr.io/getglitch/number-reverser:${{ github.sha }}
+
       - name: Deploy application
         run: |
           kubectl apply -k k8s/overlays/dev
+
+
+  # ============================================================
+  # STAGE 15 - ROLLOUT & DEPLOYMENT VERIFICATION
+  # ============================================================
+
+  verify:
+    name: "15. Verify - Kubernetes Deployment"
+    runs-on: ubuntu-latest
+    needs: kubernetes_deploy
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::598907064200:role/GitHubActions-NumberReverser
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verify EKS nodes
+        run: |
+          kubectl get nodes
 
       - name: Wait for rollout
         run: |
@@ -287,6 +647,20 @@ jobs:
 
       - name: Verify deployment
         run: |
-          kubectl get deployments -n number-reverser-dev
-          kubectl get pods -n number-reverser-dev
-          kubectl get svc -n number-reverser-dev
+          echo "===== Deployments ====="
+          kubectl get deployments \
+            -n number-reverser-dev
+
+          echo "===== Pods ====="
+          kubectl get pods \
+            -n number-reverser-dev
+
+          echo "===== Services ====="
+          kubectl get svc \
+            -n number-reverser-dev
+
+      - name: Verify application rollout
+        run: |
+          kubectl get deployment number-reverser \
+            -n number-reverser-dev \
+            -o wide
