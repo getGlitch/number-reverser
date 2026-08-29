@@ -36,7 +36,7 @@ def test_health_endpoint():
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+    assert response.json() == {"status": "Tera Bhai Healthy Hai"}
 
 
 def test_reverse_endpoint():
