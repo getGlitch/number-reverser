@@ -211,6 +211,10 @@ jobs:
           kustomize edit set image \
             number-reverser=ghcr.io/getglitch/number-reverser:${{ github.sha }}
 
+      - name: Verify rendered image
+        run: |
+          kubectl kustomize k8s/overlays/dev | grep "image:"
+
       - name: Deploy application
         run: |
           kubectl apply -k k8s/overlays/dev
