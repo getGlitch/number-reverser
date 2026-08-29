@@ -209,7 +209,7 @@ jobs:
         run: |
           cd k8s/overlays/dev
           kustomize edit set image \
-            number-reverser=ghcr.io/getglitch/number-reverser:${{ github.sha }}
+            ghcr.io/getglitch/number-reverser=ghcr.io/getglitch/number-reverser:${{ github.sha }}
 
           echo "===== kustomization.yaml after image update ====="
           cat kustomization.yaml
