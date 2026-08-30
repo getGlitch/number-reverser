@@ -91,7 +91,7 @@ The implementation also handles the required edge cases:
 
 The application has unit tests covering the expected behavior.
 
-<img width="1356" height="484" alt="image" src="https://github.com/user-attachments/assets/e3020d6e-5968-4458-bff7-f38381a78d4d" />
+<img width="1364" height="586" alt="image" src="https://github.com/user-attachments/assets/041848c6-aff5-475b-8752-097556f9fbe1" />
 
 
 ---
