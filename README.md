@@ -114,7 +114,13 @@ Worker nodes run in private subnets rather than being directly exposed to the in
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the complete architecture.
 
+<img width="1348" height="579" alt="image" src="https://github.com/user-attachments/assets/2559b8e3-4fc6-4600-86df-29c1d1684e7c" />
+
+
 See [`docs/TERRAFORM.md`](docs/TERRAFORM.md) for the Terraform implementation.
+
+<img width="1229" height="682" alt="image" src="https://github.com/user-attachments/assets/20b43546-242a-49c5-aeb3-4528e1408d32" />
+
 
 ---
 
@@ -154,6 +160,9 @@ The container image is signed using Cosign with GitHub Actions OIDC and the sign
 
 See [`docs/CI-CD.md`](docs/CI-CD.md).
 
+<img width="1345" height="590" alt="image" src="https://github.com/user-attachments/assets/de03e36b-a987-4635-85ee-f929b113519c" />
+
+
 ---
 
 ## Kubernetes Security
@@ -178,6 +187,9 @@ The deployment uses:
 Kyverno is used to enforce workload security requirements at admission time.
 
 See [`docs/KUBERNETES.md`](docs/KUBERNETES.md).
+
+<img width="1345" height="567" alt="image" src="https://github.com/user-attachments/assets/8696c18e-0f3b-44d5-a5d0-0ba0a4ac3a14" />
+
 
 ---
 
@@ -211,6 +223,9 @@ GitHub Actions assumes the AWS deployment role using GitHub OIDC.
 
 See [`SECURITY.md`](SECURITY.md) for the implemented security controls and evidence.
 
+<img width="1338" height="540" alt="image" src="https://github.com/user-attachments/assets/dc223f34-1590-4dfa-8307-9dd085e97ff5" />
+
+
 ---
 
 ## Deployment
@@ -224,6 +239,8 @@ Kubernetes/Kustomize manages the application workload.
 For deployment, verification, and teardown instructions see:
 
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+
+<img width="1357" height="555" alt="image" src="https://github.com/user-attachments/assets/edf1d8bc-5df8-4aab-b209-111d3e8f8474" />
 
 ---
 
